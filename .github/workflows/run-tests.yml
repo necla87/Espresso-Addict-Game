@@ -4,9 +4,9 @@ name: Node.js CI
 # in which branch(es) should start the jobs...
 on:
   push:
-    branches: [main, workshop-1-selenium]
+    branches: [mai ]
   pull_request:
-    branches: [main, workshop-1-selenium]
+    branches: [main]
 
 # jobs to run
 jobs:

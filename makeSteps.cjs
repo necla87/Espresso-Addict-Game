@@ -1,49 +1,85 @@
-import seleniumWebdriver, { By, until } from 'selenium-webdriver';
-import { setWorldConstructor, setDefaultTimeout } from '@cucumber/cucumber';
-import { timeout, browser, headless } from '../../config.js';
-import chrome from 'selenium-webdriver/chrome.js';
+let duplicateStepsWarningCommentsOn = false;
+let featureFolder = './tests/features';
+let stepDefinitionFolder = './tests/features/step-definitions';
+let dependenciesForSteps = `
+import { Given, When, Then } from '@cucumber/cucumber';
+import { By, until, Key } from 'selenium-webdriver';
+import { expect } from 'chai';`;
+const { promisify } = require('util');
+const { resolve, join, sep, normalize, dirname } = require('path');
+const fs = require('fs');
+const readdir = promisify(fs.readdir);
+const stat = promisify(fs.stat);
 
-const options = new chrome.Options();
-headless && options.addArguments('--headless=new');
+featureFolder = join(__dirname, featureFolder);
+stepDefinitionFolder = join(__dirname, stepDefinitionFolder);
 
-export const driver = new seleniumWebdriver
-  .Builder()
-  .setChromeOptions(options)
-  .forBrowser(browser)
-  .build();
-
-class CustomWorld {
-  constructor() {
-    this.driver = driver;
-  }
-
-  async get(cssSelector) {
-    return await this.driver.findElement(By.css(cssSelector));
-  }
-
-  async getMany(cssSelector) {
-    return await this.driver.findElements(By.css(cssSelector));
-  }
-
-  async getByXPath(xPath) {
-    return await this.driver.findElement(By.xpath(xPath));
-  }
-
-  async getManyByXPath(xPath) {
-    return await this.driver.findElements(By.xpath(xPath));
-  }
-
-  async getWait(cssSelector, maxTimeToWaitMs = 5000) {
-    return await this.driver.wait(
-      until.elementLocated(By.css(cssSelector)), maxTimeToWaitMs);
-  }
-
-  async getByXPathWait(xPath, maxTimeToWaitMs = 5000) {
-    return await this.driver.wait(
-      until.elementLocated(By.xpath(xPath)), maxTimeToWaitMs);
-  }
-
+async function getFiles(dir) {
+  const subdirs = await readdir(dir);
+  const files = await Promise.all(subdirs.map(async (subdir) => {
+    const res = resolve(dir, subdir);
+    return (await stat(res)).isDirectory() ? getFiles(res) : res;
+  }));
+  return files.reduce((a, f) => a.concat(f), []);
 }
 
-setDefaultTimeout(timeout);
-setWorldConstructor(CustomWorld);
+function toVarName(x) {
+  return x.replace(/\s/g, '').normalize('NFD').replace(/\p{Diacritic}/gu, '');
+}
+
+let stepMemory = {};
+function generateSteps(gherkin, file) {
+  file = file.split(sep + 'tests' + sep + 'features' + sep).pop().split('feature').join('js');
+  let commands = 'Given,When,Then,And,But,*'.split(',');
+  let pseudoCommands = commands.slice(3);
+  let lastCommand = 'Given';
+  let steps = [];
+  for (let line of gherkin.split('\n')) {
+    let az = 'abcdefghijklmnopqrstuvwxyz'.split('');
+    line = line.trim();
+    let command = line.split(/\s/)[0];
+    let rest = line.replace(command, '').trim();
+    if (pseudoCommands.includes(command)) { command = lastCommand; }
+    lastCommand = command;
+    if (commands.includes(command)) {
+      // break out strings
+      let args = [];
+      rest = rest.replace(/"<[^>]{1,}>"/g, x => args.push(toVarName(x.slice(2, -2))) && '{string}');
+      rest = rest.replace(/"[^"]*"/g, () => (args.push(az.shift() || 'args' + args.length) && '{string}'));
+      rest = rest.replace(/\d{1,}/g, () => (args.push(az.shift() || 'args' + args.length) && '{float}'));
+      let step = `${command}('${rest}', async function(${args.join(', ')})` +
+        `{\n  // TODO: implement step\n});`
+      if (stepMemory[step]) {
+        if (duplicateStepsWarningCommentsOn) {
+          step = '/* No duplicate steps, this one already '
+            + (stepMemory[step] === file ? 'above' : 'in '
+              + stepMemory[step]) + '\n'
+            + step.split('{\n  // TODO: implement step\n}').join('{}') + '*/';
+        }
+        else {
+          step = '';
+        }
+      }
+      else { stepMemory[step] = file; }
+      step && steps.push(step);
+    }
+  }
+  return steps.join('\n\n');
+}
+
+async function start() {
+  let files = (await getFiles(featureFolder)).filter(x => x.slice(-8) === '.feature');
+  for (let file of files) {
+    let steps = generateSteps(fs.readFileSync(file, 'utf-8'), file);
+    let filePath = normalize(stepDefinitionFolder + sep + file.replace(featureFolder, '')).slice(0, -8) + '.js';
+    let dirPath = dirname(filePath);
+    !fs.existsSync(dirPath) && fs.mkdirSync(dirPath, { recursive: true });
+    steps = dependenciesForSteps + '\n\n' + steps;
+    fs.existsSync(filePath) && (filePath += '.new');
+    console.log('Created ', filePath);
+    fs.writeFileSync(filePath, steps, 'utf-8');
+  }
+  console.log('\n');
+}
+
+start();
